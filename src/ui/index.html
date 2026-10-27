@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+  <title>拾光 · MediaCatch</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-icon" aria-hidden="true">↧</span><div><strong>拾光</strong><span>MEDIA CATCH</span></div><span class="local-tag">本地</span></div>
+    <form id="address-form" class="navigation">
+      <div class="navigation-buttons">
+        <button id="back" type="button" class="icon-button" title="后退" aria-label="后退" disabled>←</button>
+        <button id="forward" type="button" class="icon-button" title="前进" aria-label="前进" disabled>→</button>
+        <button id="reload" type="button" class="icon-button" title="刷新网页" aria-label="刷新网页">↻</button>
+      </div>
+      <label class="address-wrap"><span aria-hidden="true">⌕</span><input id="address" type="text" placeholder="输入网址，开始浏览和收集" aria-label="网页地址" autocomplete="off" spellcheck="false"></label>
+      <button type="submit" class="go-button">打开网页 <span aria-hidden="true">↗</span></button>
+    </form>
+  </header>
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="settings">
+        <div class="section-heading"><h1>自动收集</h1><span id="capture-status" class="status-chip">未开启</span></div>
+        <p class="muted introduction">边浏览，边保存你需要的图片与视频。</p>
+        <label class="field-label">下载类型</label>
+        <div class="type-picker" role="group" aria-label="下载类型">
+          <button data-type="both" aria-pressed="true">全部</button>
+          <button data-type="image" aria-pressed="false">▧ 图片</button>
+          <button data-type="video" aria-pressed="false">▷ 视频</button>
+        </div>
+        <div class="filter-line"><label for="min-size">图片大小</label><select id="min-size"><option value="0">不限大小</option><option value="10">至少 10 KB</option><option value="50">至少 50 KB</option><option value="100">至少 100 KB</option><option value="500">至少 500 KB</option></select></div>
+        <div id="video-quality" class="filter-line" title="从已识别的同一视频版本中，优先选择分辨率最高的版本。单一直链保留原清晰度。"><span>视频清晰度</span><span class="quality-policy">自动 · 最高可用</span></div>
+        <div class="folder-row"><div class="folder-icon" aria-hidden="true">▱</div><div class="folder-content"><span class="field-label">保存到</span><button id="open-folder" class="folder-path" title="打开保存目录">正在读取…</button></div><button id="choose-folder" class="text-button">更改</button></div>
+        <button id="toggle-capture" class="capture-button"><span aria-hidden="true">↓</span><span id="toggle-label">开始自动下载</span></button>
+        <p id="capture-hint" class="hint">开启后，当前已发现和新加载的资源都会下载。</p>
+      </section>
+      <section class="collection" aria-label="资源与下载队列">
+        <div class="collection-switch" role="group" aria-label="资源列表视图"><button data-collection="page" aria-pressed="true">当前页面</button><button data-collection="history" aria-pressed="false">下载历史</button></div>
+        <div class="collection-heading"><h2><span id="collection-title">当前页面资源</span> <span id="total-count">0</span></h2><button id="clear" class="text-button" title="清理当前页面的非活动资源，保留下载历史和文件">清理本页</button></div>
+        <div class="stats"><div><strong id="complete-count">0</strong><span>已保存</span></div><div><strong id="active-count">0</strong><span>进行中</span></div><div><strong id="total-size">0 B</strong><span id="size-label">本页已下载</span></div></div>
+        <div class="list-tabs" role="group" aria-label="筛选记录"><button data-filter="all" aria-pressed="true">全部</button><button data-filter="pending" aria-pressed="false">待下载</button><button data-filter="complete" aria-pressed="false">已完成</button><button data-filter="failed" aria-pressed="false">异常</button></div>
+        <div id="resource-list" class="resource-list"></div>
+        <div id="history-list" class="resource-list" hidden></div>
+        <p id="fragment-note" class="fragment-note" hidden></p>
+      </section>
+      <div class="sidebar-note"><span class="dot"></span>文件保存在你的电脑上</div>
+    </aside>
+    <section class="browser-area">
+      <div class="page-bar"><span class="page-dot" id="page-dot"></span><span id="page-title">浏览器已就绪</span><span class="engine-label">内置浏览器</span></div>
+      <div id="browser-host" class="browser-host">
+        <div class="welcome">
+          <div class="welcome-art" aria-hidden="true"><div class="art-card picture"><span>▧</span><i></i><b>IMAGE</b></div><div class="art-card movie"><span>▷</span><b>VIDEO</b></div><div class="art-save">↓</div></div>
+          <span class="eyebrow">让喜欢的内容，留在本地</span>
+          <h2>浏览到哪里，<br>就收集到哪里。</h2>
+          <p>在上方输入网址，像平时一样浏览。<br>选择图片或视频，拾光会为你自动保存。</p>
+          <div class="steps"><span><i>1</i> 打开网页</span><span><i>2</i> 选择类型</span><span><i>3</i> 开启下载</span></div>
+          <p class="welcome-note">需要登录的网站，请先在内置浏览器中登录。<br>滚动页面或播放视频后，新加载的资源会自动被发现。</p>
+        </div>
+      </div>
+      <div id="page-error" class="page-error" role="status" hidden></div>
+    </section>
+  </main>
+  <footer><span id="footer-message">支持图片、直链视频和未加密 HLS 点播；自动选择清晰度并合并分离音轨。</span><span>MediaCatch <span id="version">0.1.6</span></span></footer>
+  <div id="toast" role="alert" class="toast" hidden></div>
+  <dialog id="preview-dialog" aria-labelledby="preview-title">
+    <div class="preview-heading"><div><span class="preview-eyebrow">资源预览</span><h2 id="preview-title"></h2></div><button id="close-preview" class="icon-button" aria-label="关闭预览">×</button></div>
+    <div id="preview-stage" class="preview-stage"></div>
+    <p id="preview-message" class="preview-message" role="status">正在准备预览…</p>
+    <div class="preview-footer"><span id="preview-detail">预览使用临时缓存，确认内容后可保存文件。</span><button id="save-preview" class="go-button" disabled>保存文件</button></div>
+  </dialog>
+</body>
+</html>

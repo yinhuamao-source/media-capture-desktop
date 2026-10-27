@@ -1,0 +1,35 @@
+name: Desktop builds
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run prepare:media
+      - run: npm test
+      - run: npm run test:smoke
+      - if: runner.os == 'macOS'
+        run: npm run dist:mac:test -- --x64
+      - if: runner.os == 'Windows'
+        run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaCatch-${{ runner.os }}
+          path: |
+            release/*.zip
+            release/*-test/*.zip
+            release/*-test/mac-validation.json
+            release/*.exe
+            test-output/smoke-result.json
+          if-no-files-found: error

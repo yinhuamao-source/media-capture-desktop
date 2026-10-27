@@ -1,0 +1,128 @@
+# 拾光 · MediaCatch
+
+Windows / macOS 桌面图片与视频下载客户端，内置浏览器。打开网页，选择图片、视频或两者，开启自动下载；滚动页面、播放视频时，新加载的媒体自动加入队列。
+
+0.1.6：修复 Mac 打包配置跳过签名、导致保留残缺 Electron 签名的问题。旧 0.1.5 Mac 包未通过 `codesign --verify --deep --strict`，不能作为正常分发包。现在对应用、Electron 嵌套组件与内置 FFmpeg 签名，打包前及 ZIP 解压后均严格验证。正式构建要求本机具备 Developer ID Application 证书与私钥，以及钥匙串公证配置；缺失时直接失败，完成公证票据验证及 Gatekeeper 检查后才报告成功。测试包名称明确带 `-test`，使用临时签名，不代表已获得 Apple 信任。Mac 要求 macOS 13.0 或更高，当前生成的是 M 系列测试包，位于 `release/0.1.6-test/`。本次没有改动媒体下载逻辑，Windows 仍使用 0.1.5 包。
+
+0.1.5：默认自动选择最高可用清晰度，按分辨率优先、码率其次排序；最高版本播放列表不可用时尝试下一版本。根据主播放列表关系合并同一视频的多种清晰度；X 的已观测 HLS 地址额外按视频 ID 分组，保持不同视频独立。仅从已发现的版本/主列表明确提供的版本中选择，不猜测地址、不升频转码。列表与下载历史显示所选清晰度。
+
+支持未加密 HLS 点播中的分离音轨：选择主列表声明的默认音轨（其次 AUTOSELECT），使用同一浏览器会话下载视频、音频分段，再通过内置 FFmpeg 合成为 MP4。视频流不重编码；音频优先直接复制，MP4 不兼容时转 AAC。确认输出含视频和音频轨道后才保存成功。音轨下载、时长校验或合并失败会报错并清理临时文件；只发现 X 视频轨且没有完整音轨时不会保存缺声文件。已保存的旧无声文件保留，可重新打开原页下载完整版本。预览使用相同合并流程，保存与预览使用同一份字节。
+
+已通过 29 项核心测试及真实 Electron 测试，覆盖分辨率选择、默认音轨、实际音频采样解码、音轨失败清理、临时预览原样保存和播放器音频解码。Mac 内置从官方 FFmpeg 8.1.3 源码编译的轻量组件；Windows 使用固定并校验 SHA-256 的 Gyan FFmpeg 8.1.2 构建，随包附许可证与来源信息。Windows 包尚未实机验证。产物目录 `release/0.1.5/`。
+
+实测原 X 视频：自动选择 1920×1080，输出 53,683,891 字节 MP4，包含视频与音轨；内置预览显示约 80 秒。完整音轨解码通过，抽样音频包含非零声音数据。旧的 720p 无声文件仍保留在历史中，新版下载另存为带声音版本。
+
+0.1.4：将「当前页面」与「下载历史」分为独立列表。刷新、前进后退、打开新网页或改变 SPA 页面地址时，当前资源按新一轮页面加载重新收集；旧请求和旧 DOM 扫描的迟到结果不会混入新页。下载历史独立显示已保存文件和本次尚未结束的任务；成功记录重启后保留，可直接预览和定位文件，无需重新打开来源网页。两个列表分别保留状态筛选。「清理本页」只清理本页非活动资源，刷新后可重新发现，不删除历史或文件。已经开始的下载继续执行并更新历史。21 项核心测试和真实 Electron 测试通过；新产物在 `release/0.1.4/`，Windows 包尚未实机验证。
+
+0.1.3：点击资源卡片、名称或图标可预览图片/视频。未保存的资源先加载至临时缓存，确认内容后可将同一份文件保存至下载目录；关闭预览会取消加载并清理该缓存。已保存资源直接读取本地文件。视频支持播放和拖动进度，实际解码能力取决于 Chromium；TS、部分编码或特殊图片格式可能无法内置预览，会明确显示失败，不标为预览成功。大文件/HLS 需要先完成临时加载或合并。
+
+修复将随机名称的 MP4 初始化片段误当完整视频保存的问题：HLS 播放清单中的初始化/媒体片段从独立资源列表排除，MP4/MOV 在发布成功文件前检查数据块长度、视频轨道、初始化与媒体数据是否齐全；只有初始化信息、独立媒体片段或独立音轨不计入成功下载。对实际验证过的 X 初始化/独立音轨路径提前过滤。没有音轨的视频会在列表与预览中标注；当前版本仍不合并分离音轨。重启后从本地已保存文件恢复真实扩展名和大小。此检查不是对每一帧的完整解码，预览也不保证所有网站的资源完整性。历史误保存文件不自动删除。19 项核心测试与 Mac 真实 Electron 测试通过，覆盖预览、播放/拖动、原样保存及缓存取消清理；Windows 包仍需实机验证。新产物在 `release/0.1.3/`。
+
+0.1.2：切换「全部／图片／视频」时，收集列表及数量、下载统计立即按类型刷新，并保留「待下载／已完成／异常」状态筛选；切回其他类型时仍可看到原有记录。真实 Electron 界面测试覆盖类型切换、统计、状态筛选组合及记录保留。安装包位于 `release/0.1.2/`。
+
+0.1.1 修复跨域媒体下载的 `net::ERR_BLOCKED_BY_CLIENT`：DOM 补扫不再覆盖已捕获的请求头；下载和每次重定向均按 `strict-origin-when-cross-origin` 规范处理 Referer，同源保留路径、跨域只发送来源站点、HTTPS 降级移除来源。保持浏览器默认安全策略。新增真实 Electron 跨域回归与请求头来源优先级测试，核心测试现为 14 项。
+
+0.1.1 已在打包后的 Mac 应用中重新打开用户反馈的百度视频页并下载成功，文件为 3,420,860 字节 MP4。修复前新增的跨域回归测试复现了相同错误，并输出 `invalid referrer`；修复后真实 Electron 全流程验证通过。新产物在 `release/0.1.1/`，Windows 包已同步构建，尚未实机验证。
+
+2026-10-26 本次交付：Apple Silicon Mac 应用及 ZIP、Windows x64 ZIP 已构建。12 项核心测试及 Mac 端真实 Electron 冒烟测试通过；打包后的 Mac 应用已启动并验证外部网页显示。Windows 包已检查封装与文件完整性，尚未在 Windows 机器上运行验证。未提供目标网站，因此尚未验证具体业务网站的兼容性。
+
+## 使用
+
+1. 打开 MediaCatch，在顶部输入完整网址。需要登录的网站先在内置浏览器中登录。
+2. 左侧选择「全部」「图片」或「视频」，收集列表与统计会同步显示所选类型，并保留当前状态筛选；按需要设置图片最小大小、保存目录。
+3. 点击「开始自动下载」。已发现的资源和后续加载的资源都会按所选类型下载。
+4. 在网页内滚动或播放视频，让网页加载更多内容；「当前页面」只展示本页发现的资源，刷新网页会自动重新收集。「下载历史」可查看已保存文件与本次下载任务；「查看文件」可定位到保存位置。
+   点击资源名称/图标可先预览；如果希望确认后再保存，请先暂停自动下载，再在预览中点击「保存文件」。
+5. 「暂停自动下载」会停止队列并中止进行中的下载；恢复时未完成文件从头下载。也可取消或重试单条任务。
+
+默认保存位置是系统下载目录下的 `MediaCatch/网站/日期/图片或视频/`。改变目录只影响随后开始的任务。文件名含资源标识，不覆盖已有文件；同一页面内按资源 URL 去重，最近 5,000 条成功记录用于独立下载历史和重启后去重。刷新后再次发现的已保存资源会显示已保存，不会重复下载。删除已保存文件后重启应用即可再次下载该资源。
+
+## 当前支持范围
+
+| 类型 | 支持情况 |
+| --- | --- |
+| HTTP(S) 图片 | 支持 JPEG、PNG、WebP、GIF、AVIF、SVG 等；包含网络加载的 CSS 背景图和 iframe 资源 |
+| HTTP(S) 视频文件 | 支持 MP4、WebM、MOV 等；移除浏览器的 Range 请求头，重新请求完整文件 |
+| HLS 点播 | 支持未加密、无字节区间/时间轴断点的 TS 或单初始化片段 MP4；自动选择最高可用分辨率，支持主列表声明的分离音轨 |
+| HLS 输出 | 分离音轨合成为 `.mp4`；无分离音轨的 TS 保留 `.ts`，fMP4 合并为 `.mp4`。视频不重编码；音频必要时转 AAC。单独 TS 可用支持 TS 的播放器打开 |
+| DASH / 直播 / 加密 HLS | 暂不支持，显示原因；不把播放列表或零散流片段当作完整视频保存 |
+| `blob:` / `data:` / Canvas | 尚不直接导出；blob 播放器背后的 HTTP 视频或 HLS 请求若可识别，仍可下载 |
+| 特定站点的自定义鉴权、DRM、私有播放器 | 未作网站专门适配，不能承诺任意网站都可下载 |
+
+通过浏览器网络请求识别媒体，并扫描当前页面已加载的 `img` / `video` 补充发现。页面中尚未加载的图片、未请求的视频清晰度不会被凭空发现。远程页面没有本地 Node.js 权限，登录会话保存在本机 Chromium 配置目录；不会发送到额外服务器。部分网站会限制内嵌浏览器登录，需要实际网站验证。
+
+并发下载 3 个任务；最多保留 2,000 条会话资源，刷新/切换页面时会释放旧页非活动、未开始下载的资源及已持久保存的完成记录。「清理本页」不删除媒体文件或下载历史，已清理资源不会因同一轮页面扫描立即重新出现；刷新网页即可重新收集。手动点击单条「下载」可越过类型和图片大小筛选。成功历史只保存资源标识、本地路径、类型、来源站点与完成时间等元数据，不持久保存请求鉴权头或带签名参数的媒体 URL。
+
+## 安装包与构建
+
+`release/` 包含本机生成的产物。正式 Mac ZIP 解压后将 `.app` 拖入「应用程序」；需要 macOS 13.0 或更高。`arm64` 对应 M 系列，`x64` 对应 Intel。Windows ZIP 需完整解压，再运行 `MediaCatch.exe`，不能只复制其中一个 EXE。
+
+现有 0.1.6 Mac 测试包只有完整的临时签名，尚未做 Developer ID 发布签名及公证，其他 Mac 仍可能阻止运行；它不能代替正式发布包。旧 0.1.5 Mac ZIP 的签名已确认有缺陷，请勿继续分发。Windows 包尚未使用发行者证书签名。
+
+开发环境：Node.js 22 或更高版本。
+
+```sh
+npm ci
+npm run prepare:media
+npm start
+```
+
+```sh
+npm run pack:mac       # Apple Silicon 临时签名 .app，仅供本地测试
+npm run dist:mac:test  # Apple Silicon 测试 ZIP，文件名包含 -test
+npm run pack:win       # Windows x64 ZIP
+npm run dist:mac:arm64 # M 系列正式 ZIP，必须配置证书和公证
+npm run dist:mac       # M 系列 + Intel 正式 ZIP，必须配置证书和公证
+npm run dist:win       # Windows x64 NSIS 安装程序（建议在 Windows 上运行）
+```
+
+Windows/macOS 共用 Electron 界面与 JavaScript 下载逻辑，音视频合并使用随包内置的 FFmpeg 子进程。`npm run prepare:media` 为当前平台准备组件；Mac 从官方固定版源码构建（需要 Xcode 命令行工具），Windows 下载固定版压缩包并校验上游 SHA-256。跨平台打包可先运行 `node scripts/prepare-ffmpeg.cjs darwin-arm64 win32-x64`。构建配置会带上相应平台组件及许可证。仓库提供两平台 CI 工作流，后续推送到 GitHub 时可在对应系统上运行测试、构建；创建文件不等于已经运行过 CI。
+
+### Mac 正式签名与公证（一次性准备）
+
+1. 需要 Apple Developer Program 会员及对应团队的证书权限。打开 Xcode → Settings → Accounts，登录开发者账号，选择团队 → Manage Certificates → ＋ → **Developer ID Application**。必须是包含私钥的本机签名身份；普通 Apple Development / Apple Distribution 证书不能代替它。也可使用 [Apple 开发者网站的证书创建流程](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)。
+2. 在自己的终端中执行下方命令，按交互提示提供 Apple 账号、Team ID 和 App 专用密码，保存至系统钥匙串。不要把密码、私钥或 `.p12` 写进代码、聊天、命令历史或 CI 日志。
+
+   ```sh
+   xcrun notarytool store-credentials "mediacatch-notary"
+   ```
+
+3. 构建正式 M 系列包（会将应用提交 Apple 公证）：
+
+   ```sh
+   APPLE_KEYCHAIN_PROFILE=mediacatch-notary npm run dist:mac:arm64
+   ```
+
+   如果本机有多个发布证书，增加 `MEDIA_CATCH_SIGN_IDENTITY`，值为目标证书名称的一部分或 SHA-1。正式包输出到 `release/版本号/`，测试包输出到 `release/版本号-test/`。验证结果与 SHA-256 保存在相同目录。CI 默认仅生成标注 `-test` 的 Mac 测试包，不会无凭据尝试正式发布。
+
+所有资源必须在签名前准备好，签名后不能再替换 `app.asar`、FFmpeg 或其他包内文件。修改后须重新构建、签名、公证；不能只重新压缩旧包。对将要传给其他电脑的最终 ZIP 运行：
+
+```sh
+npm run verify:mac -- --release release/0.1.6/MediaCatch-0.1.6-mac-arm64.zip
+```
+
+这个命令会解压到临时目录，检查应用及 FFmpeg 的签名、发行者、时间戳、运行时保护、公证票据和 Gatekeeper。没有 `--release` 时仅校验签名完整性，不代表其他 Mac 会信任该包。参考：[Apple 公证说明](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
+
+## 验证
+
+```sh
+npm test
+npm run test:smoke
+```
+
+单元测试覆盖媒体识别、Windows 文件名、路径限制、HLS 解析与去重、下载类型筛选、暂停清理、错误/部分视频拒绝、文件重名保护。真实 Electron 冒烟测试启动本地网页，点击应用 UI，验证 Cookie/Referer、图片与可播放 H.264 MP4 下载后的 SHA-256、动态加载、HLS 分段拼接、重定向跨站认证信息移除、暂停真实流和重试。
+
+冒烟测试使用独立的 `test-output/profile` 和 `test-output/downloads`；输出 `smoke-result.json`、`welcome.png`、`downloads.png`。每次运行会替换这些专用测试输出。测试 PNG/MP4 是本项目生成的原始样本；macOS 可用 `swift test/generate-fixtures.swift` 重新生成。HLS 测试包含用于验证传输顺序的合成 TS 字节，以及按初始化/媒体部分切分的 MP4；不等同于已覆盖所有真实 HLS 编码组合。
+
+## 实现位置
+
+- `src/main.cjs`：窗口、内置浏览器、网络采集、设置与受控 IPC。
+- `src/network.cjs`：带本机浏览器会话的流式 HTTP 下载与逐跳重定向。
+- `src/downloads.cjs`：队列、筛选、暂停取消、临时文件、去重和合并。
+- `src/media.cjs`：媒体类型、文件名与 HLS 播放列表解析。
+- `src/mux.cjs`：仅处理已下载本地文件的音视频合并、取消与兼容音频回退。
+- `scripts/prepare-ffmpeg.cjs`：平台合并组件的固定版本准备与校验。
+- `scripts/build-mac.cjs` / `scripts/verify-mac.cjs`：区分测试与正式包，签名、公证及最终 ZIP 验证。
+- `src/ui/`：中文客户端界面。
+
+参考：[Electron WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[WebRequest](https://www.electronjs.org/docs/latest/api/web-request)、[安全配置](https://www.electronjs.org/docs/latest/tutorial/security)。

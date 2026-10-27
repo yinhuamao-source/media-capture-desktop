@@ -1,0 +1,70 @@
+{
+  "name": "media-capture-desktop",
+  "version": "0.1.6",
+  "private": true,
+  "description": "拾光：带内置浏览器的图片与视频自动下载客户端",
+  "author": "MediaCatch",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "test:smoke": "electron . --smoke-test",
+    "pack:mac": "node scripts/build-mac.cjs --test --dir --arm64",
+    "pack:win": "electron-builder --win zip --x64",
+    "dist:mac": "node scripts/build-mac.cjs --release --arm64 --x64",
+    "dist:mac:arm64": "node scripts/build-mac.cjs --release --arm64",
+    "dist:mac:test": "node scripts/build-mac.cjs --test --arm64",
+    "verify:mac": "node scripts/verify-mac.cjs",
+    "dist:win": "electron-builder --win nsis --x64",
+    "prepare:media": "node scripts/prepare-ffmpeg.cjs",
+    "prepack:win": "node scripts/prepare-ffmpeg.cjs win32-x64",
+    "predist:win": "node scripts/prepare-ffmpeg.cjs win32-x64"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "local.mediacatch.desktop",
+    "productName": "MediaCatch",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "afterSign": "scripts/verify-mac.cjs",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "identity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "minimumSystemVersion": "13.0",
+      "binaries": ["Contents/Resources/ffmpeg/ffmpeg"],
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/darwin-${arch}",
+          "to": "ffmpeg"
+        }
+      ]
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/win32-${arch}",
+          "to": "ffmpeg"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "artifactName": "MediaCatch-${version}-${os}-${arch}.${ext}"
+  }
+}
