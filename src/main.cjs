@@ -151,16 +151,19 @@ function trusted(event) {
 function setupIPC() {
   ipcMain.handle('capture:preview', async (event, id) => {
     if (!trusted(event)) throw new Error('此页面无权操作客户端');
-    const item = queue.resource(id);
+    let item = queue.resource(id);
     if (!item || ['fragment', 'unsupported', 'duplicate'].includes(item.status)) throw new Error(item?.error || '资源不可预览');
     previewOpen = true; browser.setVisible(false);
     try {
+      if (['complete', 'missing'].includes(item.status) && !await queue.checkSaved(id)) throw new Error('文件已被移动或删除，请重新下载；若只有历史记录，请打开原网页重新采集');
+      item = queue.resource(id);
+      if (!item) throw new Error('资源已经移除，请重新选择');
       const result = await previews.prepare(item);
       if (typeof result.hasAudio === 'boolean') { item.hasAudio = result.hasAudio; publish(); }
       return result;
     }
     catch (error) {
-      if (error.code === 'MEDIA_FRAGMENT') { item.status = 'fragment'; item.error = error.message; queue.fragments.add(item.id); publish(); }
+      if (item && error.code === 'MEDIA_FRAGMENT') { item.status = 'fragment'; item.error = error.message; queue.fragments.add(item.id); publish(); }
       throw error;
     }
   });
@@ -197,7 +200,8 @@ function setupIPC() {
       }
       case 'reveal': {
         const item = queue.resource(arg);
-        if (!item?.filePath || item.status !== 'complete') throw new Error('文件尚未下载完成');
+        if (!item?.filePath || !['complete', 'missing'].includes(item.status)) throw new Error('文件尚未下载完成');
+        if (!await queue.checkSaved(arg)) throw new Error('文件已被移动或删除，请重新下载；若只有历史记录，请打开原网页重新采集');
         await fsp.access(item.filePath); shell.showItemInFolder(item.filePath); break;
       }
       case 'closePreview':
@@ -205,9 +209,12 @@ function setupIPC() {
         browser.setVisible(Boolean(remoteURL(browser.webContents.getURL())));
         await previews.close(); break;
       case 'savePreview': await previews.save(typeof arg === 'string' ? arg.replace(/^history:/, '') : arg, queue); break;
-      case 'retry': queue.retry(typeof arg === 'string' ? arg.replace(/^history:/, '') : arg); break;
+      case 'retry': await queue.retry(typeof arg === 'string' ? arg.replace(/^history:/, '') : arg); break;
       case 'cancel': queue.cancel(typeof arg === 'string' ? arg.replace(/^history:/, '') : arg); break;
       case 'clear': queue.clear(); break;
+      case 'remove': queue.remove(typeof arg === 'string' ? arg.replace(/^history:/, '') : arg); break;
+      case 'clearFailed': queue.clearFailed(); break;
+      case 'checkHistory': await queue.checkHistory(); break;
       default: throw new Error('不支持此操作');
     }
     publish(); return snapshot();

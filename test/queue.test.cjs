@@ -16,6 +16,127 @@ async function setup(t, fetcher, type = 'both') {
   t.after(async () => { await queue.shutdown(); await fs.rm(root, { recursive: true, force: true }); });
   return { queue, root };
 }
+
+test('clearing failed tasks releases capacity and old-page failures cannot block new resources', async t => {
+  const { queue } = await setup(t, async () => ({ response: new Response('unavailable', { status: 503 }) }));
+  queue.setEnabled(true);
+  for (let n = 0; n < 2000; n++) queue.discover({ url: `https://site/fail-${n}.png` });
+  await until(() => queue.active.size === 0 && [...queue.items.values()].every(i => i.status === 'failed'));
+  assert.equal(queue.discover({ url: 'https://site/full.png' }), undefined);
+  queue.beginPage();
+  assert(queue.discover({ url: 'https://site/new.png' }), 'old failures must not block a new page');
+  await until(() => queue.active.size === 0);
+  queue.clearFailed();
+  assert.equal(queue.items.size, 0);
+  assert.equal(queue.capacityReached, false);
+  const item = queue.discover({ url: 'https://site/clear.png' });
+  await until(() => item.status === 'failed' && queue.active.size === 0);
+  queue.clear();
+  assert(!queue.items.has(item.id), 'clear must actually release started, failed tasks');
+  assert.equal(queue.discover({ url: item.url }), undefined, 'cleared resources stay dismissed on this page');
+});
+
+test('removing failures preserves queued/active tasks and saved files', async t => {
+  const { queue } = await setup(t, async () => ({ response: new Response('image', { headers: { 'content-type': 'image/png' } }) }));
+  const saved = queue.discover({ url: 'https://site/saved.png' });
+  queue.retry(saved.id);
+  await until(() => saved.status === 'complete' && queue.active.size === 0);
+  const active = queue.discover({ url: 'https://site/active.png' });
+  active.status = 'downloading'; queue.active.set(active.id, new AbortController());
+  const queued = queue.discover({ url: 'https://site/queued.png' }); queued.status = 'queued';
+  const failed = queue.discover({ url: 'https://site/failed.png' }); failed.status = 'failed'; failed.startedAt = Date.now();
+  try {
+    queue.remove(active.id); queue.remove(queued.id); queue.remove(saved.id); queue.clearFailed();
+    assert(queue.items.has(active.id)); assert(queue.items.has(queued.id)); assert(queue.history.has(saved.id));
+    assert(!queue.items.has(failed.id));
+    assert.equal(await fs.readFile(saved.filePath, 'utf8'), 'image');
+  } finally { queue.active.delete(active.id); queued.status = 'cancelled'; }
+});
+
+test('deleted saved files can be downloaded again without restarting, including after rediscovery', async t => {
+  let calls = 0;
+  const { queue } = await setup(t, async () => { calls++; return { response: new Response('image', { headers: { 'content-type': 'image/png' } }) }; });
+  const item = queue.discover({ url: 'https://site/deleted.png' });
+  queue.retry(item.id); await until(() => item.status === 'complete' && !queue.active.size);
+  await fs.unlink(item.filePath);
+  await queue.checkSaved(`history:${item.id}`);
+  assert.equal(queue.historySnapshot()[0].status, 'missing');
+  await queue.retry(item.id); await until(() => item.status === 'complete' && !queue.active.size);
+  assert.equal(calls, 2);
+  await fs.unlink(item.filePath);
+  queue.beginPage(); queue.setEnabled(true);
+  const again = queue.discover({ url: item.url });
+  await until(() => again.status === 'complete' && calls === 3 && !queue.active.size);
+  assert.equal(await fs.readFile(again.filePath, 'utf8'), 'image');
+  assert.equal(queue.historySnapshot()[0].status, 'complete');
+  await queue.retry(again.id);
+  assert.equal(calls, 3, 'an intact saved file is still deduplicated');
+  await fs.unlink(again.filePath);
+  await queue.retry(again.id);
+  await until(() => again.status === 'complete' && calls === 4 && !queue.active.size);
+  queue.setEnabled(false);
+  await fs.unlink(again.filePath);
+  await queue.checkSaved(again.id);
+  queue.setEnabled(true);
+  await until(() => again.status === 'complete' && calls === 5 && !queue.active.size);
+});
+
+test('missing history without a live URL explains recovery and does not invent a download address', async t => {
+  const { queue, root } = await setup(t, async () => { throw new Error('unexpected fetch'); });
+  queue.history.set('old', { id: 'old', filePath: path.join(root, 'missing.png'), type: 'image' });
+  await queue.checkSaved('history:old');
+  assert.equal(queue.resource('history:old').status, 'missing');
+  assert.equal(queue.resource('history:old').canRetry, false);
+  assert.match(queue.resource('history:old').error, /原网页/);
+  assert(!JSON.stringify([...queue.history.values()]).includes('https://'));
+});
+
+test('filesystem failures cancel the response body before the task finishes', async t => {
+  let cancelled = 0;
+  const { queue, root } = await setup(t, async () => ({ response: new Response(new ReadableStream({
+    start(controller) { controller.enqueue(Buffer.from('image')); }, cancel() { cancelled++; },
+  }), { headers: { 'content-type': 'image/png' } }) }));
+  const blocked = path.join(root, 'file'); await fs.writeFile(blocked, 'not a directory');
+  queue.updateSettings({ ...queue.settings, downloadDir: blocked });
+  const item = queue.discover({ url: 'https://site/blocked.png' }); queue.retry(item.id);
+  await until(() => item.status === 'failed' && !queue.active.size);
+  assert.equal(cancelled, 1);
+  assert.equal(queue.history.size, 0);
+  assert.equal(await fs.readFile(blocked, 'utf8'), 'not a directory');
+});
+
+test('temporary file open errors cancel both response and transfer without changing the user cancellation state', async t => {
+  let cancelled = false, signal;
+  const { queue } = await setup(t, async (_url, options) => {
+    signal = options.signal;
+    return { response: new Response(new ReadableStream({ cancel() { cancelled = true; } }), { headers: { 'content-type': 'image/png' } }) };
+  });
+  const originalOpen = fs.open;
+  t.mock.method(fs, 'open', async (file, ...args) => {
+    if (String(file).endsWith('.part')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    return originalOpen(file, ...args);
+  });
+  const item = queue.discover({ url: 'https://site/open-failure.png' });
+  const controller = new AbortController();
+  await queue.run(item, controller);
+  assert.equal(item.status, 'failed'); assert.match(item.error, /permission denied/);
+  assert.equal(signal.aborted, true); assert.equal(cancelled, true);
+  assert.equal(controller.signal.aborted, false);
+});
+
+test('file permission errors do not invalidate a successful download record', async t => {
+  const { queue } = await setup(t, async () => ({ response: new Response('image', { headers: { 'content-type': 'image/png' } }) }));
+  const item = queue.discover({ url: 'https://site/protected.png' }); queue.retry(item.id);
+  await until(() => item.status === 'complete' && !queue.active.size);
+  const originalStat = fs.stat;
+  t.mock.method(fs, 'stat', async (file, ...args) => {
+    if (file === item.filePath) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    return originalStat(file, ...args);
+  });
+  await assert.rejects(queue.checkSaved(item.id), /permission denied/);
+  assert.equal(item.status, 'complete');
+  assert.equal(queue.historySnapshot()[0].status, 'complete');
+});
 test('selection + dedup + complete bytes + same-name file preservation', async t => {
   let calls = 0;
   const { queue, root } = await setup(t, async url => {

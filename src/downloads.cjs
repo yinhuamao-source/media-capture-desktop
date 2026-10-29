@@ -78,6 +78,7 @@ class DownloadQueue extends EventEmitter {
     this.hlsMetadata = new Map();
     this.probePending = new Map();
     this.probes = new Map();
+    this.fileChecks = new Map();
     this.qualityTimer = null;
     this.qualityReadyAt = 0;
     this.dismissed = new Set();
@@ -121,9 +122,21 @@ class DownloadQueue extends EventEmitter {
       if (input.size > 0 && existing.status !== 'complete') existing.size = input.size;
       if (newlyVisible) this.notify();
       if (newlyVisible && existing.mode === 'hls') this.probeHls(existing);
+      if (newlyVisible && existing.status === 'complete') this.recheckDiscovered(existing);
       return existing;
     }
+    // Retain old failures for retry until space is needed, without letting them
+    // permanently prevent discovery on subsequent pages.
+    if (this.items.size >= 2000) {
+      for (const [oldID, old] of this.items) {
+        if (!this.currentIds.has(oldID) && !this.active.has(oldID) && ['failed', 'cancelled', 'missing'].includes(old.status)) {
+          this.remove(oldID);
+          if (this.items.size < 2000) break;
+        }
+      }
+    }
     if (this.items.size >= 2000) { this.capacityReached = true; this.notify(); return; }
+    this.capacityReached = false;
     const previous = this.history.get(id);
     const item = {
       id, url, ...kind, mime: input.mime || '', pageURL: remoteURL(input.pageURL) || url,
@@ -143,13 +156,14 @@ class DownloadQueue extends EventEmitter {
     else if (this.enabled && item.status === 'detected' && this.eligible(item)) item.status = 'queued';
     this.notify();
     this.pump();
+    if (previous) this.recheckDiscovered(item);
     return item;
   }
 
   setEnabled(value) {
     this.enabled = Boolean(value);
     if (this.enabled) {
-      for (const item of this.items.values()) if (!item.supersededBy && (this.currentIds.has(item.id) || item.startedAt) && ['detected', 'paused'].includes(item.status) && this.eligible(item)) item.status = 'queued';
+      for (const item of this.items.values()) if (!item.supersededBy && (this.currentIds.has(item.id) || item.startedAt) && ['detected', 'paused', 'missing'].includes(item.status) && this.eligible(item)) item.status = 'queued';
     } else {
       this.manual.clear();
       for (const item of this.items.values()) if (item.status === 'queued') item.status = 'paused';
@@ -165,16 +179,17 @@ class DownloadQueue extends EventEmitter {
       if (item.status === 'filtered' && this.eligible(item)) item.status = 'detected';
       if (!this.eligible(item) && ['queued', 'paused'].includes(item.status)) item.status = 'detected';
       if (!this.eligible(item) && this.active.has(item.id) && !this.manual.has(item.id)) this.active.get(item.id).abort('filtered');
-      if (this.enabled && !item.supersededBy && this.currentIds.has(item.id) && this.eligible(item) && item.status === 'detected') item.status = 'queued';
+      if (this.enabled && !item.supersededBy && this.currentIds.has(item.id) && this.eligible(item) && ['detected', 'missing'].includes(item.status)) item.status = 'queued';
     }
     this.notify(); this.pump();
   }
 
-  retry(id) {
+  async retry(id) {
     let item = this.items.get(id);
     const visited = new Set();
     while (item?.supersededBy && !visited.has(item.id)) { visited.add(item.id); item = this.items.get(item.supersededBy); }
-    if (!item || ['downloading', 'complete', 'unsupported', 'fragment'].includes(item.status)) return;
+    if (item?.status === 'complete') await this.checkSaved(item.id);
+    if (this.closed || !item || this.items.get(item.id) !== item || ['downloading', 'complete', 'unsupported', 'fragment'].includes(item.status)) return;
     if (item.status === 'checking') { this.manual.add(item.id); return; }
     item.status = 'queued'; item.error = '';
     this.manual.add(item.id);
@@ -194,11 +209,64 @@ class DownloadQueue extends EventEmitter {
       if (item && !this.active.has(id) && item.status !== 'queued') {
         this.dismissed.add(id); this.currentIds.delete(id);
         this.probePending.delete(id); this.probes.get(id)?.abort(); this.hlsMetadata.delete(id);
-        if (!item.startedAt || item.status === 'complete') this.items.delete(id);
+        if (!item.startedAt || ['complete', 'failed', 'cancelled', 'missing'].includes(item.status)) this.items.delete(id);
       }
     }
     while (this.dismissed.size > 10000) this.dismissed.delete(this.dismissed.values().next().value);
-    this.capacityReached = false; this.notify();
+    this.capacityReached = this.items.size >= 2000; this.notify();
+  }
+  remove(id) {
+    const item = this.items.get(id);
+    if (!item || this.active.has(id) || !['failed', 'cancelled', 'missing'].includes(item.status)) return;
+    if (this.currentIds.has(id)) this.dismissed.add(id);
+    this.currentIds.delete(id); this.items.delete(id); this.manual.delete(id);
+    this.probePending.delete(id); this.probes.get(id)?.abort(); this.hlsMetadata.delete(id);
+    this.capacityReached = this.items.size >= 2000; this.notify();
+  }
+  clearFailed() {
+    for (const [id, item] of this.items) if (['failed', 'cancelled'].includes(item.status)) this.remove(id);
+  }
+  recheckDiscovered(item) {
+    void this.checkSaved(item.id).then(exists => {
+      if (!exists && !this.closed && this.items.get(item.id) === item && this.currentIds.has(item.id) && item.status === 'missing' && this.enabled && this.eligible(item)) {
+        item.status = 'queued'; this.notify(); this.pump();
+      }
+    }).catch(() => {}); // Permission/IO errors must not be mistaken for a deleted file.
+  }
+  async checkSaved(reference, { persist = true } = {}) {
+    const item = this.resource(reference);
+    if (!item || !['complete', 'missing'].includes(item.status)) return false;
+    const id = item.id;
+    if (this.fileChecks.has(id)) return this.fileChecks.get(id);
+    const record = this.history.get(id);
+    const check = (async () => {
+      let exists;
+      try { exists = (await fs.stat(item.filePath)).isFile(); }
+      catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error; exists = false; }
+      if (this.closed || this.history.get(id) !== record) return exists;
+      const live = this.items.get(id);
+      if (record && Boolean(record.missing) !== !exists) {
+        record.missing = !exists;
+        if (persist) this.historyChanged([...this.history.values()]);
+      }
+      if (live && ['complete', 'missing'].includes(live.status)) {
+        live.status = exists ? 'complete' : 'missing';
+        live.error = exists ? '' : '文件已被移动或删除，可以重新下载';
+        if (!exists) live.received = 0;
+      }
+      this.notify();
+      return exists;
+    })();
+    this.fileChecks.set(id, check);
+    try { return await check; } finally { this.fileChecks.delete(id); }
+  }
+  async checkHistory() {
+    const ids = [...this.history.keys()];
+    const missingBefore = ids.filter(id => this.history.get(id)?.missing).join(',');
+    for (let n = 0; n < ids.length && !this.closed; n += 16) {
+      await Promise.all(ids.slice(n, n + 16).map(id => this.checkSaved(`history:${id}`, { persist: false }).catch(() => {})));
+    }
+    if (!this.closed && missingBefore !== ids.filter(id => this.history.get(id)?.missing).join(',')) this.historyChanged([...this.history.values()]);
   }
   snapshot() {
     return this.serialize([...this.items.values()].filter(item => this.currentIds.has(item.id) && item.status !== 'fragment' && !item.supersededBy));
@@ -213,13 +281,14 @@ class DownloadQueue extends EventEmitter {
   historyItem(record) {
     const ext = path.extname(record.filePath).slice(1).toLowerCase();
     const type = record.type || (['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg', 'bmp', 'ico', 'tif', 'tiff', 'img'].includes(ext) ? 'image' : 'video');
-    return { ...record, ext, type, mode: record.mode || 'file', name: path.basename(record.filePath), status: 'complete', received: 0,
+    return { ...record, ext, type, mode: record.mode || 'file', name: path.basename(record.filePath), status: record.missing ? 'missing' : 'complete', received: 0,
+      canRetry: Boolean(this.items.get(record.id)?.url), error: record.missing ? '文件已被移动或删除；可重新下载，或打开原网页重新采集' : '',
       host: record.host || path.basename(path.dirname(path.dirname(path.dirname(record.filePath)))),
       source: '', createdAt: record.completedAt || 0, history: true };
   }
   historySnapshot() {
     const records = new Map([...this.history].map(([id, record]) => [id, this.historyItem(record)]));
-    const tasks = [...this.items.values()].filter(item => ['queued', 'downloading', 'paused', 'failed', 'cancelled'].includes(item.status) && (item.startedAt || item.status === 'queued'));
+    const tasks = [...this.items.values()].filter(item => ['queued', 'downloading', 'paused', 'failed', 'cancelled', 'missing'].includes(item.status) && (item.startedAt || ['queued', 'missing'].includes(item.status)));
     for (const item of this.serialize(tasks)) records.set(item.id, { ...item, history: true });
     return [...records.values()].sort((a, b) => (b.completedAt || b.startedAt || b.createdAt) - (a.completedAt || a.startedAt || a.createdAt));
   }
@@ -421,15 +490,16 @@ class DownloadQueue extends EventEmitter {
   }
 
   async run(item, controller) {
-    let handle, temp, hlsKey;
+    let handle, temp, hlsKey, response;
     const intermediates = new Set();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30 * 60 * 1000)]);
+    const transfer = new AbortController();
+    const signal = AbortSignal.any([controller.signal, transfer.signal, AbortSignal.timeout(30 * 60 * 1000)]);
     item.status = 'downloading'; item.startedAt ||= Date.now(); item.error = ''; item.received = 0; item.segmentsDone = 0;
     this.notify();
     try {
       const root = this.settings.downloadDir;
       const minBytes = item.type === 'image' && !this.manual.has(item.id) ? this.settings.minImageKB * 1024 : 0;
-      let response, plan;
+      let plan;
       if (item.mode === 'hls') {
         plan = await this.hlsPlan(item, signal);
         hlsKey = urlKey([...plan.segments, ...(plan.audio?.segments || [])].join('\n'));
@@ -519,6 +589,10 @@ class DownloadQueue extends EventEmitter {
       }
     } finally {
       item.muxing = false;
+      // Destroying Electron's response stream alone does not abort its native
+      // request. End the transfer lifetime too, including mkdir/open failures.
+      transfer.abort();
+      await response?.body?.cancel().catch(() => {});
       if (handle) await handle.close().catch(() => {});
       if (temp) await fs.unlink(temp).catch(() => {});
       for (const file of intermediates) await fs.unlink(file).catch(() => {});
@@ -531,7 +605,7 @@ class DownloadQueue extends EventEmitter {
     this.closed = true; this.setEnabled(false);
     clearTimeout(this.qualityTimer); this.probePending.clear();
     for (const probe of this.probes.values()) probe.abort();
-    while (this.active.size || this.probes.size) await new Promise(resolve => setTimeout(resolve, 20));
+    while (this.active.size || this.probes.size || this.fileChecks.size) await new Promise(resolve => setTimeout(resolve, 20));
   }
 
   async importPreview(id, source, extension, quality) {

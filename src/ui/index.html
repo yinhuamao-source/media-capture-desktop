@@ -40,11 +40,12 @@
       </section>
       <section class="collection" aria-label="资源与下载队列">
         <div class="collection-switch" role="group" aria-label="资源列表视图"><button data-collection="page" aria-pressed="true">当前页面</button><button data-collection="history" aria-pressed="false">下载历史</button></div>
-        <div class="collection-heading"><h2><span id="collection-title">当前页面资源</span> <span id="total-count">0</span></h2><button id="clear" class="text-button" title="清理当前页面的非活动资源，保留下载历史和文件">清理本页</button></div>
+        <div class="collection-heading"><h2><span id="collection-title">当前页面资源</span> <span id="total-count">0</span></h2><button id="clear" class="text-button" title="清理当前页面的非活动资源，保留成功历史和文件">清理本页</button><button id="clear-failed" class="text-button" title="移除失败和已取消的任务记录，不删除文件" hidden>清理失败任务</button></div>
         <div class="stats"><div><strong id="complete-count">0</strong><span>已保存</span></div><div><strong id="active-count">0</strong><span>进行中</span></div><div><strong id="total-size">0 B</strong><span id="size-label">本页已下载</span></div></div>
         <div class="list-tabs" role="group" aria-label="筛选记录"><button data-filter="all" aria-pressed="true">全部</button><button data-filter="pending" aria-pressed="false">待下载</button><button data-filter="complete" aria-pressed="false">已完成</button><button data-filter="failed" aria-pressed="false">异常</button></div>
         <div id="resource-list" class="resource-list"></div>
         <div id="history-list" class="resource-list" hidden></div>
+        <nav id="list-pagination" class="list-pagination" aria-label="资源列表分页" hidden><button id="previous-page" aria-label="上一页">上一页</button><span id="page-number" aria-live="polite"></span><button id="next-page" aria-label="下一页">下一页</button></nav>
         <p id="fragment-note" class="fragment-note" hidden></p>
       </section>
       <div class="sidebar-note"><span class="dot"></span>文件保存在你的电脑上</div>

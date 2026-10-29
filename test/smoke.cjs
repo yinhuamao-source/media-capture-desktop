@@ -20,6 +20,7 @@ async function run({ win, browser, queue, settings, navigate, fetchMedia, previe
   let seenDownloadCookie = false, seenDownloadReferer = false;
   let crossAuth, crossReferer, slowRequests = 0, slowClosed = false;
   let lateResponse, lowQualitySegments = 0;
+  let diskFailureClosed = false;
   const cross = http.createServer((req, res) => {
     crossAuth = req.headers.authorization;
     crossReferer = req.headers.referer;
@@ -37,6 +38,11 @@ async function run({ win, browser, queue, settings, navigate, fetchMedia, previe
     if (url.pathname === '/redirect.png') { res.writeHead(302, { Location: crossURL }); res.end(); return; }
     if (url.pathname === '/other') { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<!doctype html><title>第二个页面</title><img src="/only-b.png">'); return; }
     if (url.pathname === '/late.png') { lateResponse = res; return; }
+    if (url.pathname === '/disk-failure.png') {
+      res.once('close', () => { diskFailureClosed = true; });
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length });
+      res.write(png.subarray(0, 10)); return;
+    }
     if (url.pathname === '/index.m3u8') { res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' }); res.end('#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n/first.ts\n#EXTINF:1,\n/second.ts\n#EXT-X-ENDLIST'); return; }
     if (url.pathname === '/quality-master.m3u8') { res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' }); res.end('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",DEFAULT=YES,NAME="Default",URI="/quality-audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=160x90,AUDIO="a"\n/quality-low.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=320x180,AUDIO="a"\n/quality-high.m3u8'); return; }
     if (url.pathname === '/quality-audio.m3u8') { res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' }); res.end('#EXTM3U\n#EXTINF:2,\n/tone.m4a\n#EXT-X-ENDLIST'); return; }
@@ -256,6 +262,19 @@ async function run({ win, browser, queue, settings, navigate, fetchMedia, previe
     await waitFor(() => !browser.webContents.isLoading() && queue.snapshot().length === 1 && queue.snapshot()[0].source.endsWith('/only-b.png'), 'full navigation and reload preserve page isolation');
     await assertList('both');
     const report = { passed: true, checks: ['separate audio automatically muxed + Chromium audio decode verified', 'highest resolution before bitrate + one resource per HLS video + visible quality', 'separate page resources and persistent download history', 'reload recollects cached resources and resets clear-list exclusions', 'SPA navigation + stale response isolation', 'history preview independently of current page', 'image + unsaved MP4 + saved HLS previews', 'preview playback and seek', 'preview save exact bytes + temporary cache cleanup', 'native webpage restored on close', 'real UI navigation and start/pause', 'network detection', 'image/video selection', 'resource list + counts follow type while preserving status filter', 'switching back restores collected records', 'dynamic images', 'URL deduplication', 'cookie + referer replay', 'PNG byte equality', 'playable H.264 MP4 byte equality', 'HLS segment ordering (synthetic transport fixture)', 'HLS init + MP4 bytes reconstruction', 'cross-origin auth stripping', 'cross-origin Referer policy (ERR_BLOCKED_BY_CLIENT regression)', 'pause aborts real Chromium stream + manual restart', 'remote page isolation'], items: queue.snapshot(), history: queue.historySnapshot() };
+    const blockedDir = path.join(output, 'blocked-directory');
+    await fs.writeFile(blockedDir, 'not a directory');
+    const { DownloadQueue } = require('../src/downloads.cjs');
+    const diskQueue = new DownloadQueue({ fetcher: fetchMedia, settings: { ...settings, downloadDir: blockedDir } });
+    try {
+      const diskItem = diskQueue.discover({ url: `${base}/disk-failure.png` });
+      await diskQueue.retry(diskItem.id);
+      await waitFor(() => diskItem.status === 'failed' && !diskQueue.active.size, 'filesystem error finishes download');
+      await waitFor(() => diskFailureClosed, 'filesystem error closes real Chromium response/socket', 5000);
+    } finally { await diskQueue.shutdown(); await fs.unlink(blockedDir); }
+    await require('./ui-regressions.cjs').run({ ui, queue, browser, previews, base, png, waitFor, output, win });
+    report.checks.push('filesystem failure closes real network stream', 'missing files recover through UI without restarting', 'history-only missing files explain recovery', '520 resources and history paginate with working preview beyond entry 500', 'pagination survives state updates and resets for filters/navigation');
+    report.items = queue.snapshot(); report.history = queue.historySnapshot();
     await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ passed: true, saved: report.history.filter(i => i.status === 'complete').length, checks: report.checks }));
   } finally { server.closeAllConnections(); cross.closeAllConnections(); server.close(); cross.close(); }

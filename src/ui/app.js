@@ -2,8 +2,11 @@ const $ = selector => document.querySelector(selector);
 let state, listFilter = 'all', toastTimer;
 let collectionView = 'page';
 const collectionFilters = { page: 'all', history: 'all' };
+const collectionPages = { page: 0, history: 0 };
+const pageSize = 250;
 let previewId = null, previewGeneration = 0;
 const statusText = { checking: '正在识别清晰度…', detected: '待下载', queued: '排队中', paused: '已暂停', downloading: '下载中', complete: '已保存', failed: '下载失败', unsupported: '暂不支持', cancelled: '已取消', filtered: '小于筛选大小', duplicate: '重复视频，已跳过' };
+statusText.missing = '文件已丢失';
 const bytes = n => n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n || 0} B`;
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 5000); }
 async function command(name, value) {
@@ -15,22 +18,29 @@ function action(label, name, id) { const button = el('button', '', label); butto
 function selectedTypeItems() { return (collectionView === 'history' ? state.history || [] : state.items).filter(item => state.settings.type === 'both' || item.type === state.settings.type); }
 function resourceReference(item) { return item.history ? `history:${item.id}` : item.id; }
 function renderList(resetScroll = false) {
+  if (resetScroll) collectionPages[collectionView] = 0;
   const list = $(collectionView === 'history' ? '#history-list' : '#resource-list');
   const scroll = resetScroll ? 0 : list.scrollTop;
   const typeItems = selectedTypeItems();
   let items = typeItems.filter(item => listFilter === 'all' ||
     listFilter === 'pending' && ['checking', 'detected', 'queued', 'paused', 'downloading'].includes(item.status) ||
     listFilter === 'complete' && item.status === 'complete' ||
-    listFilter === 'failed' && ['failed', 'unsupported'].includes(item.status));
+    listFilter === 'failed' && ['failed', 'unsupported', 'missing'].includes(item.status));
   items = items.sort((a, b) => (b.completedAt || b.startedAt || b.createdAt) - (a.completedAt || a.startedAt || a.createdAt));
   const fragment = document.createDocumentFragment();
   if (!items.length) {
     const kind = { both: '媒体', image: '图片', video: '视频' }[state.settings.type];
     const empty = el('div', 'list-empty'); empty.append(el('span', 'empty-icon', '▤'), el('span', '', typeItems.length ? '此状态下还没有记录' : collectionView === 'history' ? `还没有${kind}下载记录` : state.page.loading ? '正在重新收集本页资源…' : `本页还没有发现${kind}资源`), el('br'), el('span', '', typeItems.length ? '切换状态筛选，可查看其他记录。' : collectionView === 'history' ? '下载后的文件会保留在这里。' : '浏览、滚动或播放视频后，资源会自动显示。')); fragment.append(empty);
   }
-  for (const item of items.slice(0, 250)) {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const page = collectionPages[collectionView] = Math.min(collectionPages[collectionView], pageCount - 1);
+  $('#list-pagination').hidden = pageCount <= 1;
+  $('#page-number').textContent = `${page + 1} / ${pageCount} 页 · ${items.length} 条`;
+  $('#previous-page').disabled = page === 0;
+  $('#next-page').disabled = page + 1 >= pageCount;
+  for (const item of items.slice(page * pageSize, (page + 1) * pageSize)) {
     const card = el('article', 'resource'); card.dataset.id = item.id;
-    const canPreview = !['unsupported', 'duplicate'].includes(item.status);
+    const canPreview = !['unsupported', 'duplicate', 'missing'].includes(item.status);
     const icon = el('button', `resource-icon ${item.type}`, item.type === 'image' ? '▧' : '▷');
     icon.setAttribute('aria-label', `预览 ${item.name}`); icon.title = '点击预览'; icon.disabled = !canPreview;
     icon.addEventListener('click', () => openPreview(item)); card.append(icon);
@@ -59,23 +69,27 @@ function renderList(resetScroll = false) {
     row.append(el('span', '', label));
     if (item.status === 'complete') row.append(action('查看文件 ↗', 'reveal', resourceReference(item)));
     else if (['downloading', 'queued'].includes(item.status)) row.append(action('取消', 'cancel', resourceReference(item)));
-    else if (!['unsupported', 'checking'].includes(item.status)) row.append(action(item.status === 'failed' ? '重试' : '下载', 'retry', resourceReference(item)));
+    else if (!['unsupported', 'checking'].includes(item.status) && item.canRetry !== false) row.append(action(item.status === 'missing' ? '重新下载' : item.status === 'failed' ? '重试' : '下载', 'retry', resourceReference(item)));
+    if (['failed', 'cancelled'].includes(item.status)) row.append(action('移除', 'remove', resourceReference(item)));
     info.append(row);
     if (item.error) info.append(el('p', 'resource-error', item.error));
     card.append(info); fragment.append(card);
   }
-  if (items.length > 250) fragment.append(el('p', 'list-empty', `显示最近 250 条，共 ${items.length} 条；其余任务仍正常下载。`));
   list.replaceChildren(fragment); list.scrollTop = scroll;
 }
 function render(next) {
   const typeChanged = state?.settings.type !== next.settings.type;
   const pageChanged = state?.page.generation !== next.page.generation;
+  if (typeChanged) { collectionPages.page = 0; collectionPages.history = 0; }
+  if (pageChanged) collectionPages.page = 0;
   state = next;
   $('#resource-list').hidden = collectionView !== 'page';
   $('#history-list').hidden = collectionView !== 'history';
   $('#collection-title').textContent = collectionView === 'history' ? '下载历史' : '当前页面资源';
   $('#size-label').textContent = collectionView === 'history' ? '已保存大小' : '本页已下载';
   $('#clear').hidden = collectionView === 'history';
+  $('#clear-failed').hidden = collectionView !== 'history';
+  $('#clear-failed').disabled = !(state.history || []).some(i => ['failed', 'cancelled'].includes(i.status));
   document.querySelectorAll('[data-collection]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.collection === collectionView)));
   document.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.filter === listFilter)));
   $('[data-filter=pending]').textContent = collectionView === 'history' ? '进行中' : '待下载';
@@ -108,7 +122,12 @@ function render(next) {
   renderList(typeChanged || (pageChanged && collectionView === 'page'));
 }
 $('#address-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#address'); const value = input.value; input.blur(); command('navigate', value); });
-for (const [id, cmd] of [['back', 'back'], ['forward', 'forward'], ['reload', 'reload'], ['toggle-capture', 'toggle'], ['choose-folder', 'chooseDirectory'], ['open-folder', 'openDirectory'], ['clear', 'clear']]) $(`#${id}`).addEventListener('click', () => command(cmd));
+for (const [id, cmd] of [['back', 'back'], ['forward', 'forward'], ['reload', 'reload'], ['toggle-capture', 'toggle'], ['choose-folder', 'chooseDirectory'], ['open-folder', 'openDirectory'], ['clear', 'clear'], ['clear-failed', 'clearFailed']]) $(`#${id}`).addEventListener('click', () => command(cmd));
+for (const [id, delta] of [['previous-page', -1], ['next-page', 1]]) $(`#${id}`).addEventListener('click', () => {
+  collectionPages[collectionView] = Math.max(0, collectionPages[collectionView] + delta);
+  renderList();
+  $(collectionView === 'history' ? '#history-list' : '#resource-list').scrollTop = 0;
+});
 document.querySelectorAll('[data-type]').forEach(button => button.addEventListener('click', () => command('type', button.dataset.type)));
 document.querySelectorAll('[data-filter]').forEach(button => button.addEventListener('click', () => {
   listFilter = button.dataset.filter;
@@ -120,6 +139,7 @@ document.querySelectorAll('[data-collection]').forEach(button => button.addEvent
   collectionView = button.dataset.collection;
   listFilter = collectionFilters[collectionView];
   render(state);
+  if (collectionView === 'history') command('checkHistory');
 }));
 $('#min-size').addEventListener('change', event => command('minImageKB', Number(event.target.value)));
 const observer = new ResizeObserver(() => {
